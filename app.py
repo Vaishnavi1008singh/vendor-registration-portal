@@ -51,66 +51,120 @@ page = st.sidebar.radio(
 # ======================================================
 if page == "Vendor Registration":
 
-    st.title("🏭 Vendor Registration Portal")
-    st.write("Welcome. Please fill in the vendor registration form below.")
+    st.title("🏭 IKIO Vendor Registration Portal")
+    st.write("Please fill in the vendor registration form below.")
 
     st.header("Vendor / Company Details")
 
-    company_name = st.text_input("Company / Vendor Name *")
-    contact_person = st.text_input("Contact Person Name *")
-    mobile = st.text_input("Mobile Number *")
-    email = st.text_input("Email ID *")
-    address = st.text_area("Complete Address *")
-    city = st.text_input("City *")
-    state = st.text_input("State *")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        company_name = st.text_input("Company / Vendor Name *")
+    with col2:
+        contact_person = st.text_input("Contact Person Name *")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        mobile = st.text_input("Mobile Number *")
+    with col2:
+        email = st.text_input("Email ID *")
+
+    address = st.text_area("Complete Address *", height=90)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        city = st.text_input("City *")
+    with col2:
+        state = st.text_input("State *")
+
     pin_code = st.text_input("PIN Code *")
+
+    st.divider()
 
     st.header("Tax & Registration Details")
 
-    pan = st.text_input("PAN Number *")
-    gstin = st.text_input("GSTIN *")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        pan = st.text_input("PAN Number *")
+    with col2:
+        gstin = st.text_input("GSTIN *")
+
     msme = st.text_input("MSME / Udyam Registration No.")
+
+    st.divider()
 
     st.header("Products / Services")
 
-    category = st.selectbox(
-        "Vendor Category",
-        ["Raw Material", "Components", "Packaging", "Service Provider", "Other"]
+    col1, col2 = st.columns(2)
+
+    with col1:
+        category = st.selectbox(
+            "Vendor Category",
+            [
+                "Raw Material",
+                "Components",
+                "Packaging",
+                "Service Provider",
+                "Other"
+            ]
+        )
+
+    products = st.text_area(
+        "Products / Materials / Services Offered *",
+        height=90
     )
 
-    products = st.text_area("Products / Materials / Services Offered *")
+    st.divider()
 
     st.header("Bank Details")
 
-    bank_name = st.text_input("Bank Name *")
-    account_holder = st.text_input("Account Holder Name *")
-    account_number = st.text_input("Account Number *")
-    ifsc = st.text_input("IFSC Code *")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        bank_name = st.text_input("Bank Name *")
+    with col2:
+        account_holder = st.text_input("Account Holder Name *")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        account_number = st.text_input("Account Number *")
+    with col2:
+        ifsc = st.text_input("IFSC Code *")
+
+    st.divider()
 
     st.header("Documents")
 
-    st.file_uploader(
-        "Upload PAN Card",
-        type=["pdf", "jpg", "jpeg", "png"]
-    )
+    col1, col2 = st.columns(2)
 
-    st.file_uploader(
-        "Upload GST Certificate",
-        type=["pdf", "jpg", "jpeg", "png"]
-    )
+    with col1:
+        st.file_uploader(
+            "Upload PAN Card",
+            type=["pdf", "jpg", "jpeg", "png"]
+        )
+
+    with col2:
+        st.file_uploader(
+            "Upload GST Certificate",
+            type=["pdf", "jpg", "jpeg", "png"]
+        )
 
     st.file_uploader(
         "Upload Cancelled Cheque / Bank Proof",
         type=["pdf", "jpg", "jpeg", "png"]
     )
 
-    st.header("Declaration")
+    st.divider()
 
     declaration = st.checkbox(
         "I confirm that the information provided above is true and correct."
     )
 
-    if st.button("Submit Vendor Registration"):
+    if st.button("Submit Vendor Registration", use_container_width=True):
 
         if not company_name or not contact_person or not mobile or not email:
             st.error("Please fill all mandatory fields.")
@@ -119,6 +173,7 @@ if page == "Vendor Registration":
             st.error("Please accept the declaration before submitting.")
 
         else:
+
             submitted_on = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
 
             cursor.execute("""
