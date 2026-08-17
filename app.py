@@ -40,12 +40,26 @@ st.set_page_config(
     layout="wide"
 )
 
-# -------------------- SIDEBAR --------------------
-page = st.sidebar.radio(
-    "Select Page",
-    ["Vendor Registration", "Management Dashboard"]
-)
+# -------------------- LOGIN --------------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
+# Sidebar
+if st.session_state.logged_in:
+    page = st.sidebar.radio(
+        "Select Page",
+        ["Vendor Registration", "Management Dashboard"]
+    )
+
+    if st.sidebar.button("🚪 Logout"):
+        st.session_state.logged_in = False
+        st.rerun()
+
+else:
+    page = st.sidebar.radio(
+        "Select Page",
+        ["Vendor Registration", "Management Login"]
+    )
 # ======================================================
 # VENDOR REGISTRATION PAGE
 # ======================================================
@@ -227,10 +241,24 @@ if page == "Vendor Registration":
             st.info(f"Vendor Registration ID: VR-{vendor_id:05d}")
 
 # ======================================================
-# MANAGEMENT DASHBOARD
+# MANAGEMENT LOGIN / DASHBOARD
 # ======================================================
-else:
+elif page == "Management Login":
 
+    st.title("🔐 Management Login")
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if username == "admin" and password == "ikio@123":
+            st.session_state.logged_in = True
+            st.success("Login Successful")
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password")
+
+else:
     st.title("📊 Management Dashboard")
 
     df = pd.read_sql_query(
