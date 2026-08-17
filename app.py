@@ -1,286 +1,392 @@
+"""
+IKIO Vendor Registration Portal
+--------------------------------
+Streamlit + SQLite production app.
+
+Pages:
+  - Vendor Registration (public)
+  - Management Login -> Management Dashboard (after auth)
+
+Run:
+  streamlit run app.py
+"""
+
+import os
+import re
 import sqlite3
-import datetime
-import streamlit as st
+from datetime import datetime
+
 import pandas as pd
+import streamlit as st
 
-# -------------------- DATABASE --------------------
-conn = sqlite3.connect("vendors.db", check_same_thread=False)
-cursor = conn.cursor()
+# --------------------------------------------------------------------------
+# CONSTANTS / CONFIG
+# --------------------------------------------------------------------------
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS vendors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_name TEXT,
-    contact_person TEXT,
-    mobile TEXT,
-    email TEXT,
-    address TEXT,
-    city TEXT,
-    state TEXT,
-    pin_code TEXT,
-    pan TEXT,
-    gstin TEXT,
-    msme TEXT,
-    category TEXT,
-    products TEXT,
-    bank_name TEXT,
-    account_holder TEXT,
-    account_number TEXT,
-    ifsc TEXT,
-    submitted_on TEXT
-)
-""")
+DB_PATH = "vendors.db"
+DOCS_DIR = "vendor_documents"
 
-conn.commit()
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "ikio@123"
 
-# -------------------- PAGE SETTINGS --------------------
+os.makedirs(DOCS_DIR, exist_ok=True)
+
 st.set_page_config(
-    page_title="Vendor Registration Portal",
+    page_title="Vendor Registration Portal - IKIO",
     page_icon="🏭",
-    layout="wide"
+    layout="wide",
 )
 
-# -------------------- LOGIN --------------------
+# --------------------------------------------------------------------------
+# DATABASE LAYER
+# --------------------------------------------------------------------------
+
+def get_connection():
+    """Create a new SQLite connection (thread-safe for Streamlit reruns)."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+
+def init_db():
+    """Create the vendors table if it does not already exist."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id TEXT UNIQUE NOT NULL,
+            company_name TEXT NOT NULL,
+            contact_person TEXT NOT NULL,
+            mobile TEXT NOT NULL,
+            email TEXT NOT NULL,
+            city TEXT NOT NULL,
+            state TEXT NOT NULL,
+            pan TEXT NOT NULL,
+            gst TEXT NOT NULL,
+            bank_name TEXT NOT NULL,
+            account_holder TEXT NOT NULL,
+            account_number TEXT NOT NULL,
+            ifsc_code TEXT NOT NULL,
+            documents TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_next_vendor_id():
+    """Generate the next sequential vendor id like VR-00001."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM vendors")
+    count = cur.fetchone()[0]
+    conn.close()
+    return f"VR-{count + 1:05d}"
+
+
+def insert_vendor(data: dict):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO vendors (
+            vendor_id, company_name, contact_person, mobile, email,
+            city, state, pan, gst, bank_name, account_holder,
+            account_number, ifsc_code, documents, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            data["vendor_id"],
+            data["company_name"],
+            data["contact_person"],
+            data["mobile"],
+            data["email"],
+            data["city"],
+            data["state"],
+            data["pan"],
+            data["gst"],
+            data["bank_name"],
+            data["account_holder"],
+            data["account_number"],
+            data["ifsc_code"],
+            data["documents"],
+            data["created_at"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def fetch_all_vendors() -> pd.DataFrame:
+    conn = get_connection()
+    df = pd.read_sql_query(
+        "SELECT * FROM vendors ORDER BY id DESC", conn
+    )
+    conn.close()
+    return df
+
+
+init_db()
+
+# --------------------------------------------------------------------------
+# SESSION STATE INITIALIZATION (single source of truth for auth)
+# --------------------------------------------------------------------------
+
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# Sidebar
-if st.session_state.logged_in:
-    page = st.sidebar.radio(
-        "Select Page",
-        ["Vendor Registration", "Management Dashboard"]
-    )
+if "username" not in st.session_state:
+    st.session_state.username = None
 
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state.logged_in = False
-        st.rerun()
+if "login_error" not in st.session_state:
+    st.session_state.login_error = False
 
-else:
-    page = st.sidebar.radio(
-        "Select Page",
-        ["Vendor Registration", "Management Login"]
-    )
-# ======================================================
-# VENDOR REGISTRATION PAGE
-# ======================================================
-if page == "Vendor Registration":
 
-    st.title("🏭 IKIO Vendor Registration Portal")
-    st.write("Please fill in the vendor registration form below.")
+def do_logout():
+    """Fully reset auth-related session state, then rerun."""
+    st.session_state.logged_in = False
+    st.session_state.username = None
+    st.session_state.login_error = False
+    st.rerun()
 
-    st.header("Vendor / Company Details")
 
-    col1, col2 = st.columns(2)
+# --------------------------------------------------------------------------
+# VALIDATION HELPERS
+# --------------------------------------------------------------------------
 
-    with col1:
-        company_name = st.text_input("Company / Vendor Name *")
-    with col2:
-        contact_person = st.text_input("Contact Person Name *")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MOBILE_RE = re.compile(r"^[6-9]\d{9}$")
+PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+GST_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$")
+IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 
-    col1, col2 = st.columns(2)
 
-    with col1:
-        mobile = st.text_input("Mobile Number *")
-    with col2:
-        email = st.text_input("Email ID *")
+# --------------------------------------------------------------------------
+# PAGE: VENDOR REGISTRATION (PUBLIC)
+# --------------------------------------------------------------------------
 
-    address = st.text_area("Complete Address *", height=90)
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        city = st.text_input("City *")
-    with col2:
-        state = st.text_input("State *")
-
-    pin_code = st.text_input("PIN Code *")
-
+def page_vendor_registration():
+    st.title("🏭 Vendor Registration")
+    st.caption("IKIO — New Vendor Onboarding Form")
     st.divider()
 
-    st.header("Tax & Registration Details")
+    with st.form("vendor_registration_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
 
-    col1, col2 = st.columns(2)
+        with col1:
+            company_name = st.text_input("Company Name *")
+            mobile = st.text_input("Mobile Number *", max_chars=10)
+            city = st.text_input("City *")
+            pan = st.text_input("PAN Number *", max_chars=10).upper()
+            bank_name = st.text_input("Bank Name *")
+            account_number = st.text_input("Account Number *")
 
-    with col1:
-        pan = st.text_input("PAN Number *")
-    with col2:
-        gstin = st.text_input("GSTIN *")
+        with col2:
+            contact_person = st.text_input("Contact Person *")
+            email = st.text_input("Email Address *")
+            state = st.text_input("State *")
+            gst = st.text_input("GST Number *", max_chars=15).upper()
+            account_holder = st.text_input("Account Holder Name *")
+            ifsc_code = st.text_input("IFSC Code *", max_chars=11).upper()
 
-    msme = st.text_input("MSME / Udyam Registration No.")
-
-    st.divider()
-
-    st.header("Products / Services")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        category = st.selectbox(
-            "Vendor Category",
-            [
-                "Raw Material",
-                "Components",
-                "Packaging",
-                "Service Provider",
-                "Other"
-            ]
+        st.markdown("#### Document Upload")
+        uploaded_files = st.file_uploader(
+            "Upload supporting documents (PAN card, GST certificate, cancelled cheque, etc.)",
+            accept_multiple_files=True,
+            type=["pdf", "png", "jpg", "jpeg"],
         )
 
-    products = st.text_area(
-        "Products / Materials / Services Offered *",
-        height=90
-    )
+        submitted = st.form_submit_button("Submit Registration", use_container_width=True)
 
-    st.divider()
+    if submitted:
+        errors = []
 
-    st.header("Bank Details")
+        required_fields = {
+            "Company Name": company_name,
+            "Contact Person": contact_person,
+            "Mobile Number": mobile,
+            "Email Address": email,
+            "City": city,
+            "State": state,
+            "PAN Number": pan,
+            "GST Number": gst,
+            "Bank Name": bank_name,
+            "Account Holder Name": account_holder,
+            "Account Number": account_number,
+            "IFSC Code": ifsc_code,
+        }
+        for label, value in required_fields.items():
+            if not value or not value.strip():
+                errors.append(f"{label} is required.")
 
-    col1, col2 = st.columns(2)
+        if mobile and not MOBILE_RE.match(mobile.strip()):
+            errors.append("Mobile number must be a valid 10-digit Indian number.")
+        if email and not EMAIL_RE.match(email.strip()):
+            errors.append("Email address is not valid.")
+        if pan and not PAN_RE.match(pan.strip()):
+            errors.append("PAN number format is invalid (e.g. ABCDE1234F).")
+        if gst and not GST_RE.match(gst.strip()):
+            errors.append("GST number format is invalid.")
+        if ifsc_code and not IFSC_RE.match(ifsc_code.strip()):
+            errors.append("IFSC code format is invalid (e.g. HDFC0001234).")
 
-    with col1:
-        bank_name = st.text_input("Bank Name *")
-    with col2:
-        account_holder = st.text_input("Account Holder Name *")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        account_number = st.text_input("Account Number *")
-    with col2:
-        ifsc = st.text_input("IFSC Code *")
-
-    st.divider()
-
-    st.header("Documents")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.file_uploader(
-            "Upload PAN Card",
-            type=["pdf", "jpg", "jpeg", "png"]
-        )
-
-    with col2:
-        st.file_uploader(
-            "Upload GST Certificate",
-            type=["pdf", "jpg", "jpeg", "png"]
-        )
-
-    st.file_uploader(
-        "Upload Cancelled Cheque / Bank Proof",
-        type=["pdf", "jpg", "jpeg", "png"]
-    )
-
-    st.divider()
-
-    declaration = st.checkbox(
-        "I confirm that the information provided above is true and correct."
-    )
-
-    if st.button("Submit Vendor Registration", use_container_width=True):
-
-        if not company_name or not contact_person or not mobile or not email:
-            st.error("Please fill all mandatory fields.")
-
-        elif not declaration:
-            st.error("Please accept the declaration before submitting.")
-
+        if errors:
+            for e in errors:
+                st.error(e)
         else:
+            vendor_id = get_next_vendor_id()
+            saved_filenames = []
 
-            submitted_on = datetime.datetime.now().strftime("%d-%m-%Y %H:%M")
+            if uploaded_files:
+                vendor_folder = os.path.join(DOCS_DIR, vendor_id)
+                os.makedirs(vendor_folder, exist_ok=True)
+                for f in uploaded_files:
+                    file_path = os.path.join(vendor_folder, f.name)
+                    with open(file_path, "wb") as out:
+                        out.write(f.getbuffer())
+                    saved_filenames.append(f.name)
 
-            cursor.execute("""
-            INSERT INTO vendors (
-                company_name,
-                contact_person,
-                mobile,
-                email,
-                address,
-                city,
-                state,
-                pin_code,
-                pan,
-                gstin,
-                msme,
-                category,
-                products,
-                bank_name,
-                account_holder,
-                account_number,
-                ifsc,
-                submitted_on
-            )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                company_name,
-                contact_person,
-                mobile,
-                email,
-                address,
-                city,
-                state,
-                pin_code,
-                pan,
-                gstin,
-                msme,
-                category,
-                products,
-                bank_name,
-                account_holder,
-                account_number,
-                ifsc,
-                submitted_on
-            ))
+            record = {
+                "vendor_id": vendor_id,
+                "company_name": company_name.strip(),
+                "contact_person": contact_person.strip(),
+                "mobile": mobile.strip(),
+                "email": email.strip(),
+                "city": city.strip(),
+                "state": state.strip(),
+                "pan": pan.strip(),
+                "gst": gst.strip(),
+                "bank_name": bank_name.strip(),
+                "account_holder": account_holder.strip(),
+                "account_number": account_number.strip(),
+                "ifsc_code": ifsc_code.strip(),
+                "documents": ", ".join(saved_filenames) if saved_filenames else "",
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
 
-            conn.commit()
+            insert_vendor(record)
 
-            vendor_id = cursor.lastrowid
+            st.success("✅ Registration submitted successfully!")
+            st.info(f"Your Vendor Registration ID is: **{vendor_id}**")
+            st.caption("Please save this ID for future reference.")
 
-            st.success("Vendor Registration Submitted Successfully!")
-            st.info(f"Vendor Registration ID: VR-{vendor_id:05d}")
 
-# ======================================================
-# MANAGEMENT LOGIN / DASHBOARD
-# ======================================================
-elif page == "Management Login":
+# --------------------------------------------------------------------------
+# PAGE: MANAGEMENT LOGIN
+# --------------------------------------------------------------------------
 
+def page_management_login():
     st.title("🔐 Management Login")
+    st.divider()
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    with st.form("management_login_form"):
+        username_input = st.text_input("Username")
+        password_input = st.text_input("Password", type="password")
+        login_clicked = st.form_submit_button("Login", use_container_width=True)
 
-    if st.button("Login"):
-        if username == "admin" and password == "ikio@123":
+    if login_clicked:
+        if username_input.strip() == ADMIN_USERNAME and password_input == ADMIN_PASSWORD:
             st.session_state.logged_in = True
-            st.success("Login Successful")
+            st.session_state.username = username_input.strip()
+            st.session_state.login_error = False
             st.rerun()
         else:
-            st.error("Invalid Username or Password")
+            st.session_state.logged_in = False
+            st.session_state.username = None
+            st.session_state.login_error = True
 
-else:
+    if st.session_state.login_error:
+        st.error("Invalid Username or Password")
+
+
+# --------------------------------------------------------------------------
+# PAGE: MANAGEMENT DASHBOARD (PROTECTED)
+# --------------------------------------------------------------------------
+
+def page_management_dashboard():
     st.title("📊 Management Dashboard")
+    st.caption(f"Logged in as **{st.session_state.username}**")
+    st.divider()
 
-    df = pd.read_sql_query(
-        "SELECT * FROM vendors ORDER BY id DESC",
-        conn
-    )
+    df = fetch_all_vendors()
 
-    col1, col2 = st.columns(2)
-
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total Vendors", len(df))
-
     with col2:
-        if len(df) > 0:
-            st.metric("Latest Vendor ID", f"VR-{int(df.iloc[0]['id']):05d}")
-        else:
-            st.metric("Latest Vendor ID", "-")
+        latest_id = df.iloc[0]["vendor_id"] if not df.empty else "—"
+        st.metric("Latest Vendor ID", latest_id)
+    with col3:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_count = df[df["created_at"].str.startswith(today_str)].shape[0] if not df.empty else 0
+        st.metric("Registrations Today", today_count)
 
-    st.subheader("Registered Vendors")
+    st.divider()
+    st.markdown("#### All Registered Vendors")
 
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True
+    if df.empty:
+        st.info("No vendors registered yet.")
+    else:
+        search = st.text_input("Search by company name, vendor ID, city, or state")
+        display_df = df.copy()
+        if search:
+            mask = (
+                display_df["company_name"].str.contains(search, case=False, na=False)
+                | display_df["vendor_id"].str.contains(search, case=False, na=False)
+                | display_df["city"].str.contains(search, case=False, na=False)
+                | display_df["state"].str.contains(search, case=False, na=False)
+            )
+            display_df = display_df[mask]
+
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        csv_data = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download as CSV",
+            data=csv_data,
+            file_name=f"vendors_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+        )
+
+
+# --------------------------------------------------------------------------
+# SIDEBAR NAVIGATION (auth-aware)
+# --------------------------------------------------------------------------
+
+st.sidebar.title("Select Page")
+
+if not st.session_state.logged_in:
+    page = st.sidebar.radio(
+        "Navigation",
+        ["Vendor Registration", "Management Login"],
+        label_visibility="collapsed",
     )
+else:
+    st.sidebar.success(f"Logged in as {st.session_state.username}")
+    page = st.sidebar.radio(
+        "Navigation",
+        ["Vendor Registration", "Management Dashboard"],
+        label_visibility="collapsed",
+    )
+    st.sidebar.divider()
+    if st.sidebar.button("Logout", use_container_width=True):
+        do_logout()
+
+# --------------------------------------------------------------------------
+# ROUTER
+# --------------------------------------------------------------------------
+
+if page == "Vendor Registration":
+    page_vendor_registration()
+elif page == "Management Login" and not st.session_state.logged_in:
+    page_management_login()
+elif page == "Management Dashboard" and st.session_state.logged_in:
+    page_management_dashboard()
+else:
+    # Safety net: if somehow a protected page is reached without auth,
+    # bounce back to the login page instead of showing an error.
+    page_management_login()
