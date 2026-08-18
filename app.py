@@ -48,44 +48,105 @@ def get_connection():
     return conn
 
 
+def get_existing_columns(conn, table_name):
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table_name})")
+    return [row[1] for row in cur.fetchall()]
+
+
 def init_db():
-    """Create the vendors table if it does not already exist."""
+    """
+    Create the vendors table if it does not exist at all (fresh deployments).
+    If the table already exists (your live vendors.db), NEVER recreate it.
+    Instead, migrate it in place so all expected columns are present.
+    """
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS vendors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vendor_id TEXT UNIQUE NOT NULL,
-            company_name TEXT NOT NULL,
-            contact_person TEXT NOT NULL,
-            mobile TEXT NOT NULL,
-            email TEXT NOT NULL,
-            city TEXT NOT NULL,
-            state TEXT NOT NULL,
-            pan TEXT NOT NULL,
-            gst TEXT NOT NULL,
-            bank_name TEXT NOT NULL,
-            account_holder TEXT NOT NULL,
-            account_number TEXT NOT NULL,
-            ifsc_code TEXT NOT NULL,
-            documents TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='vendors'"
     )
+    table_exists = cur.fetchone() is not None
+
+    if not table_exists:
+        cur.execute(
+            """
+            CREATE TABLE vendors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id TEXT UNIQUE,
+                company_name TEXT,
+                contact_person TEXT,
+                mobile TEXT,
+                email TEXT,
+                city TEXT,
+                state TEXT,
+                pan TEXT,
+                gst TEXT,
+                bank_name TEXT,
+                account_holder TEXT,
+                account_number TEXT,
+                ifsc_code TEXT,
+                documents TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+        return
+
+    # Table already exists (your live database) — migrate in place.
+    existing_columns = get_existing_columns(conn, "vendors")
+
+    required_columns = {
+        "vendor_id": "TEXT",
+        "company_name": "TEXT",
+        "contact_person": "TEXT",
+        "mobile": "TEXT",
+        "email": "TEXT",
+        "city": "TEXT",
+        "state": "TEXT",
+        "pan": "TEXT",
+        "gst": "TEXT",
+        "bank_name": "TEXT",
+        "account_holder": "TEXT",
+        "account_number": "TEXT",
+        "ifsc_code": "TEXT",
+        "documents": "TEXT",
+        "created_at": "TEXT",
+    }
+
+    for col_name, col_type in required_columns.items():
+        if col_name not in existing_columns:
+            cur.execute(f"ALTER TABLE vendors ADD COLUMN {col_name} {col_type}")
+
+    conn.commit()
+
+    # Backfill vendor_id for any existing rows that don't have one yet,
+    # using the existing primary key `id` so old records get a stable,
+    # correctly formatted Vendor Registration ID (e.g. VR-00001).
+    cur.execute("SELECT id FROM vendors WHERE vendor_id IS NULL OR vendor_id = ''")
+    rows_to_backfill = cur.fetchall()
+    for (row_id,) in rows_to_backfill:
+        formatted_id = f"VR-{row_id:05d}"
+        cur.execute(
+            "UPDATE vendors SET vendor_id = ? WHERE id = ?",
+            (formatted_id, row_id),
+        )
+
     conn.commit()
     conn.close()
 
 
 def get_next_vendor_id():
-    """Generate the next sequential vendor id like VR-00001."""
+    """Generate the next sequential vendor id like VR-00001, based on id."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM vendors")
-    count = cur.fetchone()[0]
+    cur.execute("SELECT MAX(id) FROM vendors")
+    max_id = cur.fetchone()[0]
     conn.close()
-    return f"VR-{count + 1:05d}"
+    next_id = (max_id or 0) + 1
+    return f"VR-{next_id:05d}"
 
 
 def insert_vendor(data: dict):
@@ -123,11 +184,32 @@ def insert_vendor(data: dict):
 
 def fetch_all_vendors() -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT * FROM vendors ORDER BY id DESC", conn
-    )
+    df = pd.read_sql_query("SELECT * FROM vendors ORDER BY id DESC", conn)
     conn.close()
+
+    # Safety net: even after migration, guarantee the columns the UI relies
+    # on always exist in the DataFrame, so the dashboard can never crash
+    # with a KeyError again even if the schema is unusual.
+    for col in ["vendor_id", "company_name", "city", "state", "created_at"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    df["vendor_id"] = df["vendor_id"].fillna("")
+    empty_mask = df["vendor_id"] == ""
+    if empty_mask.any():
+        df.loc[empty_mask, "vendor_id"] = df.loc[empty_mask, "id"].apply(
+            lambda x: f"VR-{int(x):05d}"
+        )
+
     return df
+
+
+def delete_vendor(row_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM vendors WHERE id = ?", (row_id,))
+    conn.commit()
+    conn.close()
 
 
 init_db()
@@ -145,12 +227,16 @@ if "username" not in st.session_state:
 if "login_error" not in st.session_state:
     st.session_state.login_error = False
 
+if "confirm_delete_id" not in st.session_state:
+    st.session_state.confirm_delete_id = None
+
 
 def do_logout():
     """Fully reset auth-related session state, then rerun."""
     st.session_state.logged_in = False
     st.session_state.username = None
     st.session_state.login_error = False
+    st.session_state.confirm_delete_id = None
     st.rerun()
 
 
@@ -322,7 +408,11 @@ def page_management_dashboard():
         st.metric("Latest Vendor ID", latest_id)
     with col3:
         today_str = datetime.now().strftime("%Y-%m-%d")
-        today_count = df[df["created_at"].str.startswith(today_str)].shape[0] if not df.empty else 0
+        today_count = (
+            df[df["created_at"].astype(str).str.startswith(today_str)].shape[0]
+            if not df.empty
+            else 0
+        )
         st.metric("Registrations Today", today_count)
 
     st.divider()
@@ -330,27 +420,72 @@ def page_management_dashboard():
 
     if df.empty:
         st.info("No vendors registered yet.")
-    else:
-        search = st.text_input("Search by company name, vendor ID, city, or state")
-        display_df = df.copy()
-        if search:
-            mask = (
-                display_df["company_name"].str.contains(search, case=False, na=False)
-                | display_df["vendor_id"].str.contains(search, case=False, na=False)
-                | display_df["city"].str.contains(search, case=False, na=False)
-                | display_df["state"].str.contains(search, case=False, na=False)
-            )
-            display_df = display_df[mask]
+        return
 
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        csv_data = display_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download as CSV",
-            data=csv_data,
-            file_name=f"vendors_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
+    search = st.text_input("Search by company name, vendor ID, city, or state")
+    display_df = df.copy()
+    if search:
+        mask = (
+            display_df["company_name"].astype(str).str.contains(search, case=False, na=False)
+            | display_df["vendor_id"].astype(str).str.contains(search, case=False, na=False)
+            | display_df["city"].astype(str).str.contains(search, case=False, na=False)
+            | display_df["state"].astype(str).str.contains(search, case=False, na=False)
         )
+        display_df = display_df[mask]
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    csv_data = display_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download as CSV",
+        data=csv_data,
+        file_name=f"vendors_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+    )
+
+    st.divider()
+    st.markdown("#### Manage / Delete Vendors")
+    st.caption("Management only. This permanently removes the vendor record from the database.")
+
+    for _, row in display_df.iterrows():
+        row_id = int(row["id"])
+        vendor_label = f"{row['vendor_id']} — {row['company_name']}"
+
+        with st.container(border=True):
+            c1, c2 = st.columns([5, 1])
+            with c1:
+                st.markdown(f"**{vendor_label}**")
+                st.caption(
+                    f"{row.get('city', '')}, {row.get('state', '')} · Registered: {row.get('created_at', '')}"
+                )
+            with c2:
+                if st.session_state.confirm_delete_id != row_id:
+                    if st.button("Delete", key=f"delete_btn_{row_id}", use_container_width=True):
+                        st.session_state.confirm_delete_id = row_id
+                        st.rerun()
+
+            if st.session_state.confirm_delete_id == row_id:
+                st.warning(f"Are you sure you want to permanently delete **{vendor_label}**?")
+                confirm_col1, confirm_col2 = st.columns(2)
+                with confirm_col1:
+                    if st.button(
+                        "Yes, Delete",
+                        key=f"confirm_delete_{row_id}",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        delete_vendor(row_id)
+                        st.session_state.confirm_delete_id = None
+                        st.success(f"Vendor {vendor_label} deleted.")
+                        st.rerun()
+                with confirm_col2:
+                    if st.button(
+                        "Cancel",
+                        key=f"cancel_delete_{row_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.confirm_delete_id = None
+                        st.rerun()
 
 
 # --------------------------------------------------------------------------
