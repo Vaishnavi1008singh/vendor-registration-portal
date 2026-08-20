@@ -14,6 +14,7 @@ Run:
 import os
 import re
 import sqlite3
+import textwrap
 from datetime import datetime
 
 import pandas as pd
@@ -762,8 +763,7 @@ def page_management_dashboard():
 # --------------------------------------------------------------------------
 
 def _inject_design_preview_css():
-    st.markdown(
-        """
+    css = """
         <style>
         /* Hide default Streamlit chrome for a full-bleed branded shell */
         #MainMenu, header[data-testid="stHeader"], footer {visibility: hidden;}
@@ -908,9 +908,8 @@ def _inject_design_preview_css():
         .ikio-footer-card .ftitle { font-size: 13.5px; font-weight: 800; margin-bottom: 2px; }
         .ikio-footer-card .fdesc { font-size: 12px; color: #d7ecdb; }
         </style>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    st.markdown(textwrap.dedent(css).strip(), unsafe_allow_html=True)
 
 
 def render_design_preview_shell():
@@ -1098,7 +1097,7 @@ def render_design_preview_shell():
         </div>
     </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(textwrap.dedent(html).strip(), unsafe_allow_html=True)
 
     st.markdown("---")
     st.caption(
